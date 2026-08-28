@@ -27,23 +27,40 @@ describe("long-job progress protocol", () => {
     assert.equal(state.currentAction, "2/3 · erikamoi");
   });
 
-  it("accepts structured PI_JOB_PROGRESS messages and rejects malformed payloads", () => {
-    const state = createProgressState();
-    const valid = applyProgressLine(
+  it("accepts structured lifecycle messages and rejects malformed payloads", () => {
+    let state = createProgressState();
+    let result = applyProgressLine(
       state,
-      'PI_JOB_PROGRESS {"current":7,"total":31,"item":"scene-07","phase":"training","message":"7000 / 7000"}',
+      'PI_JOB_PROGRESS {"event":"started_item","current":7,"total":31,"item":"scene-07","phase":"training","message":"7000 / 7000"}',
       4_000,
     );
-    assert.equal(valid.milestone?.kind, "progress");
-    assert.equal(valid.state.current, 7);
-    assert.equal(valid.state.total, 31);
-    assert.equal(valid.state.item, "scene-07");
-    assert.equal(valid.state.phase, "training");
-    assert.equal(valid.state.currentAction, "7/31 · scene-07 · 7000 / 7000");
+    state = result.state;
+    assert.equal(result.milestone?.kind, "started_item");
+    assert.equal(state.current, 7);
+    assert.equal(state.total, 31);
+    assert.equal(state.item, "scene-07");
+    assert.equal(state.phase, "training");
+    assert.equal(state.currentAction, "7/31 · scene-07 · 7000 / 7000");
 
-    const invalid = applyProgressLine(valid.state, "PI_JOB_PROGRESS not-json", 5_000);
+    result = applyProgressLine(
+      state,
+      'PI_JOB_PROGRESS {"event":"completed_item","current":7,"total":31,"item":"scene-07"}',
+      5_000,
+    );
+    state = result.state;
+    assert.equal(result.milestone?.kind, "completed_item");
+    assert.equal(state.completed, 7);
+
+    const progress = applyProgressLine(state, 'PI_JOB_PROGRESS {"event":"progress","message":"checkpoint"}', 5_500);
+    assert.equal(progress.milestone?.kind, "progress");
+
+    const invalidEvent = applyProgressLine(state, 'PI_JOB_PROGRESS {"event":"surprise","message":"ignored"}', 5_750);
+    assert.equal(invalidEvent.milestone, undefined);
+    assert.deepEqual(invalidEvent.state, state);
+
+    const invalid = applyProgressLine(state, "PI_JOB_PROGRESS not-json", 6_000);
     assert.equal(invalid.milestone, undefined);
-    assert.deepEqual(invalid.state, valid.state);
+    assert.deepEqual(invalid.state, state);
   });
 
   it("bounds untrusted display fields", () => {

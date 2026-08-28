@@ -29,8 +29,6 @@ export interface LongJobRecord {
   lastOutputAt?: number;
   stopRequestedAt?: number;
   milestoneSequence: number;
-  lastReportedSequence?: number;
-  lastReportedAt?: number;
   workerPid?: number;
   commandPid?: number;
   paneId?: string;

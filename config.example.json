@@ -2,7 +2,6 @@
   "pollIntervalMs": 1000,
   "historyLimit": 20,
   "inactivityAfterMs": 600000,
-  "reportMinimumIntervalMs": 300000,
   "maxLogBytes": 104857600,
-  "preferHerdr": true
+  "preferHerdr": false
 }

@@ -11,12 +11,13 @@ A normal Pi `bash` tool call blocks the orchestrator until the process exits. Du
 ## Features
 
 - Detached execution that survives the initiating assistant turn
-- Optional visible Herdr raw pane (`auto` prefers Herdr and falls back to direct execution)
+- Direct background execution by default; visible Herdr raw panes are explicit opt-in
 - Persisted status, stdout, stderr, and structured event history
-- FleetView rows through `pi-subagents/external-runs`
+- FleetView rows and per-item timelines through `pi-subagents/external-runs`
 - Background-work ownership through `pi-subagents/background-work`
 - Deterministic elapsed/output-age clocks without model-token use
-- Milestone and inactivity wakeups for concise orchestrator reports
+- Failure and inactivity wakeups for concise orchestrator attention reports
+- Normal milestones stay in FleetView instead of creating chat-message spam
 - Process-group stop and timeout handling with SIGKILL escalation
 - `/jobs` and `/jobs-stop` interactive commands
 - `long_job` tool actions: `start`, `status`, `list`, `stop`, `forget`
@@ -26,7 +27,7 @@ A normal Pi `bash` tool call blocks the orchestrator until the process exits. Du
 Pin the GitHub release:
 
 ```bash
-pi install git:github.com/Narqulie/pi-long-jobs@v0.1.0
+pi install git:github.com/Narqulie/pi-long-jobs@v0.2.0
 ```
 
 For local development:
@@ -52,12 +53,11 @@ The model-facing tool is intended for commands expected to run longer than rough
   "command": "python scripts/run_msplat_batch.py",
   "cwd": "/path/to/project",
   "totalItems": 31,
-  "timeoutMs": 14400000,
-  "surface": "auto"
+  "timeoutMs": 14400000
 }
 ```
 
-The call returns immediately with the job ID and artifact paths. Use:
+The call returns immediately with the job ID and artifact paths. Direct execution is the default so FleetView remains the primary interface. Pass `"surface": "herdr"` only when a separate visible terminal is useful. Use:
 
 ```text
 /jobs                 inspect current-session jobs
@@ -91,7 +91,9 @@ PI_JOB_PROGRESS {"event":"progress","item":"erikamoi","current":2,"total":31,"me
 PI_JOB_PROGRESS {"event":"completed_item","item":"erikamoi","current":2,"total":31}
 ```
 
-Supported events are `started_item`, `progress`, `completed_item`, and `failed_item`. Untrusted labels and messages are stripped of control characters and length-bounded before they reach FleetView or model context.
+Supported events are `started_item`, `progress`, `completed_item`, and `failed_item`. FleetView's full inspector shows the eight most recent item states and durations; select the job row and press `Enter`. Untrusted labels and messages are stripped of control characters and length-bounded before they reach FleetView or model context.
+
+Routine starts, progress updates, item completions, and successful terminal events remain deterministic Fleet state. They do not trigger model turns. A failed item, failed/timed-out terminal state, or inactivity threshold wakes the orchestrator for an attention report.
 
 ## Persistence
 
@@ -127,9 +129,8 @@ Defaults:
   "pollIntervalMs": 1000,
   "historyLimit": 20,
   "inactivityAfterMs": 600000,
-  "reportMinimumIntervalMs": 300000,
   "maxLogBytes": 104857600,
-  "preferHerdr": true
+  "preferHerdr": false
 }
 ```
 
@@ -148,7 +149,7 @@ detached worker ──► zsh process group
     ├── events.jsonl
     └── official pi-subagents registries
             ├── compact FleetView
-            ├── full Fleet inspector
+            ├── full Fleet inspector + milestone timeline
             └── background-work wake ownership
 ```
 
@@ -159,7 +160,7 @@ The extension owns process supervision only. `pi-subagents` remains authoritativ
 - Commands run through `/bin/zsh -lc` with the invoking user's authority. This is not a sandbox.
 - A detached job cannot be retrofitted onto an already-blocking `bash` call without interrupting that call.
 - Main-session ownership is exact. A replacement Pi session can see artifacts on disk but cannot stop or forget another session's job through the model tool.
-- Herdr is optional. `surface: "auto"` falls back to direct execution; `surface: "herdr"` fails if Herdr is unavailable.
+- Herdr is optional and never selected by default. `surface: "auto"` uses the configured preference and falls back to direct execution; `surface: "herdr"` fails if Herdr is unavailable.
 - History remains on disk until explicitly forgotten. Automatic retention is intentionally deferred until its policy is defined.
 - Each stdout/stderr log is capped at `maxLogBytes` (100 MiB by default); progress parsing continues after persisted log truncation.
 

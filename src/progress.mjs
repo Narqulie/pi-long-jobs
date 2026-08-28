@@ -3,6 +3,7 @@ const MAX_PHASE = 80;
 const MAX_MESSAGE = 240;
 const MAX_ACTION = 240;
 const ANSI_RE = /\x1b\[[0-?]*[ -\/]*[@-~]/g;
+const STRUCTURED_EVENTS = new Set(["started_item", "progress", "completed_item", "failed_item"]);
 
 function bounded(value, max) {
   if (typeof value !== "string") return undefined;
@@ -44,23 +45,37 @@ export function applyProgressLine(previous, rawLine, now = Date.now()) {
       return { state: previous };
     }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { state: previous };
-    const current = positiveInt(payload.current) ?? previous.current;
+
+    const event = payload.event === undefined ? "progress" : payload.event;
+    if (!STRUCTURED_EVENTS.has(event)) {
+      return { state: previous };
+    }
+
+    const suppliedCurrent = positiveInt(payload.current);
+    const current = suppliedCurrent ?? (event === "started_item"
+      ? Math.max(previous.completed + 1, previous.current ?? 0, 1)
+      : previous.current);
     const total = positiveInt(payload.total) ?? previous.total;
     const item = bounded(payload.item, MAX_ITEM) ?? previous.item;
     const phase = bounded(payload.phase, MAX_PHASE) ?? previous.phase;
-    const message = bounded(payload.message, MAX_MESSAGE) ?? previous.message;
+    const suppliedMessage = bounded(payload.message, MAX_MESSAGE);
+    const message = event === "progress" ? suppliedMessage ?? previous.message : suppliedMessage;
+    const completed = event === "completed_item"
+      ? Math.max(previous.completed + 1, current ?? 0)
+      : previous.completed;
     const next = {
       ...previous,
+      completed,
       ...(current !== undefined ? { current } : {}),
       ...(total !== undefined ? { total } : {}),
       ...(item ? { item } : {}),
       ...(phase ? { phase } : {}),
-      ...(message ? { message } : {}),
+      message,
     };
     next.currentAction = action(next);
     return {
       state: next,
-      milestone: { kind: "progress", ts: now, item, current, total, message },
+      milestone: { kind: event, ts: now, item, current, total, message },
     };
   }
 

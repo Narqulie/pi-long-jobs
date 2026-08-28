@@ -6,19 +6,17 @@ import {
 } from "pi-subagents/external-runs";
 import { registerBackgroundWorkProvider } from "pi-subagents/background-work";
 
-import { projectJobForFleet, shouldReportMilestone } from "./fleet.ts";
+import { projectJobForFleet, shouldNotifyOrchestrator } from "./fleet.ts";
 import type { LongJobMilestone, LongJobRecord, StorageOptions } from "./model.ts";
 import { listJobs, readMilestones } from "./storage.ts";
 
 export interface LongJobBridgeConfig {
   historyLimit: number;
   inactivityAfterMs: number;
-  reportMinimumIntervalMs: number;
 }
 
 export interface LongJobBridgeCallbacks {
-  onHistory(job: LongJobRecord, milestone: LongJobMilestone): void;
-  onReport(job: LongJobRecord, milestone: LongJobMilestone): void;
+  onAttention(job: LongJobRecord, milestone: LongJobMilestone): void;
   onInactivity(job: LongJobRecord, inactiveForMs: number): void;
   onChange(): void;
 }
@@ -39,7 +37,7 @@ export class LongJobBridge {
   readonly #callbacks: LongJobBridgeCallbacks;
   readonly #registered = new Set<string>();
   readonly #seenSequences = new Map<string, number>();
-  readonly #lastReportedAt = new Map<string, number>();
+  readonly #lastAttentionKind = new Map<string, LongJobMilestone["kind"]>();
   readonly #inactivityBasis = new Map<string, number>();
   #jobs = new Map<string, LongJobRecord>();
   #disposeBackgroundProvider: (() => void) | undefined;
@@ -90,13 +88,15 @@ export class LongJobBridge {
       unregisterExternalRun(this.#sessionId, id);
       this.#registered.delete(id);
       this.#seenSequences.delete(id);
-      this.#lastReportedAt.delete(id);
+      this.#lastAttentionKind.delete(id);
       this.#inactivityBasis.delete(id);
     }
 
     for (const job of selected) {
       if (!this.#started) return [];
-      const projected = projectJobForFleet(job);
+      const milestones = await readMilestones(job);
+      if (!this.#started) return [];
+      const projected = projectJobForFleet(job, milestones, now);
       if (this.#registered.has(job.id)) {
         updateExternalRun(this.#sessionId, job.id, updateFields(projected));
       } else {
@@ -108,7 +108,7 @@ export class LongJobBridge {
         }
         this.#registered.add(job.id);
       }
-      await this.#consumeMilestones(job);
+      this.#consumeMilestones(job, milestones);
       if (!this.#started) return [];
       this.#checkInactivity(job, now);
     }
@@ -130,29 +130,28 @@ export class LongJobBridge {
     this.#registered.clear();
     this.#jobs.clear();
     this.#seenSequences.clear();
-    this.#lastReportedAt.clear();
+    this.#lastAttentionKind.clear();
     this.#inactivityBasis.clear();
     this.#changeSignature = "";
   }
 
-  async #consumeMilestones(job: LongJobRecord): Promise<void> {
+  #consumeMilestones(job: LongJobRecord, milestones: readonly LongJobMilestone[]): void {
     const seen = this.#seenSequences.get(job.id);
     if (seen === undefined) {
       this.#seenSequences.set(job.id, job.milestoneSequence);
       return;
     }
-    const milestones = (await readMilestones(job)).filter((event) => event.sequence > seen).sort((a, b) => a.sequence - b.sequence);
-    if (!this.#started) return;
-    let report: LongJobMilestone | undefined;
-    const lastReportedAt = this.#lastReportedAt.get(job.id);
-    for (const milestone of milestones) {
-      this.#callbacks.onHistory(job, milestone);
-      if (shouldReportMilestone(milestone, lastReportedAt, this.#config.reportMinimumIntervalMs)) report = milestone;
+    let attention: LongJobMilestone | undefined;
+    for (const milestone of milestones.filter((event) => event.sequence > seen).sort((a, b) => a.sequence - b.sequence)) {
+      if (shouldNotifyOrchestrator(job, milestone)) attention = milestone;
       this.#seenSequences.set(job.id, milestone.sequence);
     }
-    if (report) {
-      this.#callbacks.onReport(job, report);
-      this.#lastReportedAt.set(job.id, report.ts);
+    if (attention) {
+      const previousKind = this.#lastAttentionKind.get(job.id);
+      if (attention.kind !== "terminal" || previousKind !== "failed_item") {
+        this.#callbacks.onAttention(job, attention);
+      }
+      this.#lastAttentionKind.set(job.id, attention.kind);
     }
   }
 

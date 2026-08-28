@@ -20,10 +20,23 @@ async function configFile(value: unknown): Promise<string> {
 }
 
 describe("long-job configuration", () => {
+  it("defaults to direct execution so FleetView remains the primary surface", async () => {
+    const config = await loadLongJobsConfig(await configFile({}));
+    assert.equal(config.preferHerdr, false);
+    assert.equal(config.preferHerdr, DEFAULT_LONG_JOBS_CONFIG.preferHerdr);
+  });
+
   it("uses a bounded 100 MiB default for each persisted log", async () => {
     const config = await loadLongJobsConfig(await configFile({}));
     assert.equal(config.maxLogBytes, 100 * 1024 * 1024);
     assert.equal(config.maxLogBytes, DEFAULT_LONG_JOBS_CONFIG.maxLogBytes);
+  });
+
+  it("rejects superseded chat-report configuration", async () => {
+    await assert.rejects(
+      loadLongJobsConfig(await configFile({ reportMinimumIntervalMs: 300_000 })),
+      /Unknown pi-long-jobs config fields: reportMinimumIntervalMs/,
+    );
   });
 
   it("rejects log bounds below one MiB", async () => {

@@ -14,20 +14,18 @@ afterEach(async () => {
 });
 
 describe("long-job Fleet bridge", () => {
-  it("publishes current-session jobs and coalesces adjacent item and terminal reports", async () => {
+  it("publishes successful current-session history without waking the orchestrator", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "pi-long-jobs-bridge-"));
     roots.push(root);
     const ownerSessionId = `session-${Date.now()}`;
-    const history: string[] = [];
-    const reports: string[] = [];
+    const attentions: string[] = [];
     let changes = 0;
     const bridge = new LongJobBridge({
       sessionId: ownerSessionId,
       storage: { jobsRoot: root },
-      config: { historyLimit: 20, inactivityAfterMs: 60_000, reportMinimumIntervalMs: 0 },
+      config: { historyLimit: 20, inactivityAfterMs: 60_000 },
       callbacks: {
-        onHistory: (_job, event) => history.push(event.kind),
-        onReport: (_job, event) => reports.push(event.kind),
+        onAttention: (_job, event) => attentions.push(event.kind),
         onInactivity: () => assert.fail("unexpected inactivity alert"),
         onChange: () => { changes += 1; },
       },
@@ -47,17 +45,97 @@ describe("long-job Fleet bridge", () => {
       await bridge.refresh();
       await bridge.refresh();
 
-      assert.deepEqual(history, ["started_item", "completed_item", "terminal"]);
       assert.equal(changes, 1);
-      assert.deepEqual(reports, ["terminal"]);
+      assert.deepEqual(attentions, []);
       const external = snapshotExternalRuns(ownerSessionId);
       assert.equal(external.length, 1);
       assert.equal(external[0]?.state, "completed");
       assert.equal(external[0]?.label, "Bridge probe");
+      assert.match(external[0]?.preview ?? "", /Progress: 1\/1 complete/);
+      assert.match(external[0]?.preview ?? "", /✓ alpha/);
     } finally {
       bridge.dispose();
     }
     assert.equal(snapshotExternalRuns(ownerSessionId).length, 0);
+  });
+
+  it("does not replay an item failure when the failed terminal milestone arrives later", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-long-jobs-bridge-"));
+    roots.push(root);
+    const ownerSessionId = `session-${Date.now()}-failure`;
+    const attentions: string[] = [];
+    const bridge = new LongJobBridge({
+      sessionId: ownerSessionId,
+      storage: { jobsRoot: root },
+      config: { historyLimit: 20, inactivityAfterMs: 60_000 },
+      callbacks: {
+        onAttention: (_job, event) => attentions.push(event.kind),
+        onInactivity: () => assert.fail("unexpected inactivity alert"),
+        onChange: () => {},
+      },
+    });
+    bridge.start();
+    try {
+      const started = await startJob({
+        label: "Failure probe",
+        command: "printf '===== START alpha =====\\n'; printf '===== FAIL alpha reason=probe =====\\n'; sleep 1; exit 3",
+        cwd: root,
+        ownerSessionId,
+        totalItems: 1,
+        surface: "direct",
+      }, { jobsRoot: root });
+      bridge.watch(started.id, 0);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await bridge.refresh();
+      assert.deepEqual(attentions, ["failed_item"]);
+
+      await waitForTerminalJob(started.id, { jobsRoot: root, timeoutMs: 5_000 });
+      await bridge.refresh();
+      await bridge.refresh();
+      assert.deepEqual(attentions, ["failed_item"]);
+      const external = snapshotExternalRuns(ownerSessionId);
+      assert.equal(external[0]?.state, "failed");
+      assert.match(external[0]?.preview ?? "", /✗ alpha/);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it("restores failed history into FleetView without replaying stale attention", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-long-jobs-bridge-"));
+    roots.push(root);
+    const ownerSessionId = `session-${Date.now()}-restart`;
+    const started = await startJob({
+      label: "Restart failure probe",
+      command: "printf '===== START beta =====\\n'; printf '===== FAIL beta reason=probe =====\\n'; exit 4",
+      cwd: root,
+      ownerSessionId,
+      totalItems: 1,
+      surface: "direct",
+    }, { jobsRoot: root });
+    await waitForTerminalJob(started.id, { jobsRoot: root, timeoutMs: 5_000 });
+
+    const attentions: string[] = [];
+    const bridge = new LongJobBridge({
+      sessionId: ownerSessionId,
+      storage: { jobsRoot: root },
+      config: { historyLimit: 20, inactivityAfterMs: 60_000 },
+      callbacks: {
+        onAttention: (_job, event) => attentions.push(event.kind),
+        onInactivity: () => assert.fail("unexpected inactivity alert"),
+        onChange: () => {},
+      },
+    });
+    bridge.start();
+    try {
+      await bridge.refresh();
+      assert.deepEqual(attentions, []);
+      const external = snapshotExternalRuns(ownerSessionId);
+      assert.equal(external[0]?.state, "failed");
+      assert.match(external[0]?.preview ?? "", /✗ beta/);
+    } finally {
+      bridge.dispose();
+    }
   });
 
   it("does not republish jobs after disposal races an in-flight refresh", async () => {
@@ -74,10 +152,9 @@ describe("long-job Fleet bridge", () => {
     const bridge = new LongJobBridge({
       sessionId: ownerSessionId,
       storage: { jobsRoot: root },
-      config: { historyLimit: 20, inactivityAfterMs: 60_000, reportMinimumIntervalMs: 0 },
+      config: { historyLimit: 20, inactivityAfterMs: 60_000 },
       callbacks: {
-        onHistory: () => {},
-        onReport: () => {},
+        onAttention: () => {},
         onInactivity: () => {},
         onChange: () => assert.fail("disposed bridge emitted change"),
       },
@@ -107,10 +184,9 @@ describe("long-job Fleet bridge", () => {
     const bridge = new LongJobBridge({
       sessionId: ownerSessionId,
       storage: { jobsRoot: root },
-      config: { historyLimit: 20, inactivityAfterMs: 10_000, reportMinimumIntervalMs: 0 },
+      config: { historyLimit: 20, inactivityAfterMs: 10_000 },
       callbacks: {
-        onHistory: () => {},
-        onReport: () => {},
+        onAttention: () => {},
         onInactivity: (_job, inactiveForMs) => alerts.push(inactiveForMs),
         onChange: () => {},
       },

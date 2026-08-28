@@ -1,5 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 
 import { LongJobBridge } from "./bridge.ts";
@@ -26,14 +25,6 @@ const LongJobParams = Type.Object({
 }, { additionalProperties: false });
 
 type LongJobInput = Static<typeof LongJobParams>;
-
-interface HistoryEntry {
-  label: string;
-  jobId: string;
-  kind: string;
-  text: string;
-  ts: number;
-}
 
 function sessionId(ctx: ExtensionContext): string {
   const id = ctx.sessionManager.getSessionFile() ?? ctx.sessionManager.getSessionId();
@@ -84,13 +75,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
   let refreshing = false;
   let sessionGeneration = 0;
 
-  const appendHistory = (job: LongJobRecord, milestone: LongJobMilestone) => {
-    const text = milestoneText(job, milestone);
-    const entry: HistoryEntry = { label: job.label, jobId: job.id, kind: milestone.kind, text, ts: milestone.ts };
-    pi.appendEntry("long-job-history", entry);
-  };
-
-  const sendReport = (job: LongJobRecord, milestone: LongJobMilestone) => {
+  const sendAttention = (job: LongJobRecord, milestone: LongJobMilestone) => {
     const text = milestoneText(job, milestone);
     pi.sendMessage({
       customType: "long-job-report",
@@ -102,7 +87,6 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
 
   const sendInactivity = (job: LongJobRecord, inactiveForMs: number) => {
     const text = `${job.label}: no output for ${duration(inactiveForMs)} while process remains ${job.state}`;
-    pi.appendEntry("long-job-history", { label: job.label, jobId: job.id, kind: "inactivity", text, ts: Date.now() } satisfies HistoryEntry);
     pi.sendMessage({
       customType: "long-job-report",
       content: `Machine-observed long-job attention signal: ${text}. Tell the user clearly and inspect status before making further claims.`,
@@ -138,12 +122,6 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
     currentContext = undefined;
   };
 
-  pi.registerEntryRenderer("long-job-history", (entry, _options, theme) => {
-    const data = entry.data as HistoryEntry;
-    const marker = data.kind === "failed_item" || data.kind === "inactivity" ? theme.fg("warning", "⚠") : theme.fg("success", "●");
-    return new Text(`${marker} ${theme.fg("muted", data.text)}`);
-  });
-
   pi.on("session_start", async (_event, ctx) => {
     disposeSession();
     currentContext = ctx;
@@ -153,8 +131,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
         sessionId: sessionId(ctx),
         config,
         callbacks: {
-          onHistory: appendHistory,
-          onReport: sendReport,
+          onAttention: sendAttention,
           onInactivity: sendInactivity,
           onChange: () => pi.events.emit("pi-long-jobs:changed", { sessionId: sessionId(ctx) }),
         },
@@ -176,7 +153,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "long_job",
     label: "Long job",
-    description: "Start and supervise shell commands expected to run for minutes or hours without blocking the main orchestrator. The job runs detached, persists logs and milestones, appears in pi-subagents FleetView, and can wake the parent on completed-item, failure, terminal, or inactivity events. Prefer this over bash for long-running batches. Actions: start, status, list, stop, forget.",
+    description: "Start and supervise shell commands expected to run for minutes or hours without blocking the main orchestrator. The job runs detached, persists logs and milestones, appears in pi-subagents FleetView, and wakes the parent only for failure or inactivity attention signals. Prefer this over bash for long-running batches. Actions: start, status, list, stop, forget.",
     parameters: LongJobParams,
     async execute(_toolCallId, input: LongJobInput, _signal, _onUpdate, ctx) {
       if (!config || !bridge) throw new Error("pi-long-jobs is not active for this session.");
@@ -195,7 +172,6 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
           surface,
         });
         bridge.watch(job.id, 0);
-        pi.appendEntry("long-job-history", { label: job.label, jobId: job.id, kind: "started", text: `${job.label}: detached job started`, ts: job.startedAt } satisfies HistoryEntry);
         await refresh();
         return toolResult(`Started ${jobSummary(job)}\nThe orchestrator remains available.`, job);
       }

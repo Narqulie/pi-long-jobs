@@ -16,13 +16,14 @@ describe("Pi extension integration", () => {
     const tools = new Map<string, any>();
     const commands = new Set<string>();
     const entries: unknown[] = [];
+    const reports: unknown[] = [];
     const pi = {
       on: (name: string, handler: (...args: any[]) => any) => events.set(name, handler),
       registerTool: (tool: any) => tools.set(tool.name, tool),
       registerCommand: (name: string) => commands.add(name),
       registerEntryRenderer: () => {},
       appendEntry: (_type: string, data: unknown) => entries.push(data),
-      sendMessage: () => {},
+      sendMessage: (message: unknown) => reports.push(message),
       events: { emit: () => {} },
     };
     const ctx = {
@@ -48,13 +49,15 @@ describe("Pi extension integration", () => {
         action: "start",
         label: "Extension probe",
         command: "printf 'PI_JOB_PROGRESS {\"event\":\"completed_item\",\"item\":\"one\",\"current\":1,\"total\":1}\\n'",
-        surface: "direct",
       }, undefined, undefined, ctx);
       assert.ok(Date.now() - before < 500, "tool start should return promptly");
       const id = result.details.id as string;
+      assert.equal(result.details.surface, "direct");
       const terminal = await waitForTerminalJob(id, { jobsRoot: root, timeoutMs: 5_000 });
       assert.equal(terminal.state, "completed");
-      assert.ok(entries.length >= 1);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      assert.deepEqual(entries, []);
+      assert.deepEqual(reports, []);
       const status = await tool.execute("call-2", { action: "status", id }, undefined, undefined, ctx);
       assert.match(status.content[0].text, /Extension probe · completed/);
       await events.get("session_shutdown")?.({}, ctx);
