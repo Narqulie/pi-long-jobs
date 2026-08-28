@@ -21,16 +21,25 @@ A normal Pi `bash` tool call blocks the orchestrator until the process exits. Du
 - `/jobs` and `/jobs-stop` interactive commands
 - `long_job` tool actions: `start`, `status`, `list`, `stop`, `forget`
 
-## Install locally
+## Install
+
+Pin the GitHub release:
 
 ```bash
+pi install git:github.com/Narqulie/pi-long-jobs@v0.1.0
+```
+
+For local development:
+
+```bash
+git clone https://github.com/Narqulie/pi-long-jobs.git ~/Developer/pi-long-jobs
 cd ~/Developer/pi-long-jobs
 npm install
 npm run check
 pi install ~/Developer/pi-long-jobs
 ```
 
-Restart Pi after installation. `pi-subagents >= 0.58.0` must also be enabled.
+Restart Pi after installation. A compatible `pi-subagents` 0.58.x runtime must also be enabled. The package intentionally publishes through Git rather than npm.
 
 ## Use
 
