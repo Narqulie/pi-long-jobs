@@ -1,6 +1,6 @@
 {
   "name": "pi-long-jobs",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Supervised long-running shell jobs with pi-subagents FleetView integration",
   "type": "module",
   "private": true,

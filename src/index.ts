@@ -82,7 +82,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
       content: `Machine-observed long-job milestone: ${text}. Report this progress concisely to the user. Do not claim any unobserved completion.`,
       display: false,
       details: { jobId: job.id, milestone },
-    }, { triggerTurn: true, deliverAs: "followUp" });
+    }, { triggerTurn: true, deliverAs: "steer" });
   };
 
   const sendInactivity = (job: LongJobRecord, inactiveForMs: number) => {
@@ -92,7 +92,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
       content: `Machine-observed long-job attention signal: ${text}. Tell the user clearly and inspect status before making further claims.`,
       display: false,
       details: { jobId: job.id, inactiveForMs },
-    }, { triggerTurn: true, deliverAs: "followUp" });
+    }, { triggerTurn: true, deliverAs: "steer" });
   };
 
   const refresh = async () => {

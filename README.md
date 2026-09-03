@@ -93,7 +93,7 @@ PI_JOB_PROGRESS {"event":"completed_item","item":"erikamoi","current":2,"total":
 
 Supported events are `started_item`, `progress`, `completed_item`, and `failed_item`. FleetView's full inspector shows the eight most recent item states and durations; select the job row and press `Enter`. Untrusted labels and messages are stripped of control characters and length-bounded before they reach FleetView or model context.
 
-Routine starts, progress updates, item completions, and successful terminal events remain deterministic Fleet state. They do not trigger model turns. A failed item, failed/timed-out terminal state, or inactivity threshold wakes the orchestrator for an attention report.
+Routine starts, progress updates, item completions, and successful terminal events remain deterministic Fleet state. They do not trigger model turns. A failed item, failed/timed-out terminal state, or inactivity threshold wakes an idle orchestrator; if it is already working, the signal is steered into the active run instead of accumulating as a later follow-up turn.
 
 ## Persistence
 
