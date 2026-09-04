@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, writeFile } from "node:fs/promises";
+import { access, appendFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -157,6 +157,55 @@ export async function startJob(input: StartLongJobInput, options: StorageOptions
   }
 }
 
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+export async function reconcileJob(job: LongJobRecord, options: StorageOptions = {}, now = Date.now()): Promise<LongJobRecord> {
+  if (job.state !== "queued" && job.state !== "running") return job;
+  const startGraceMs = 15_000;
+  if (job.workerPid === undefined && now - job.updatedAt < startGraceMs) return job;
+  if (job.workerPid !== undefined && processAlive(job.workerPid)) return job;
+
+  const current = await readJob(job.id, options);
+  if (current.state !== "queued" && current.state !== "running") return current;
+  if (current.workerPid !== undefined && processAlive(current.workerPid)) return current;
+  if (current.workerPid === undefined && now - current.updatedAt < startGraceMs) return current;
+
+  if (current.commandPid) {
+    try {
+      process.kill(-current.commandPid, "SIGTERM");
+      const commandPid = current.commandPid;
+      const forceKill = setTimeout(() => {
+        try { process.kill(-commandPid, "SIGKILL"); } catch {}
+      }, 5_000);
+      forceKill.unref();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+  const failure = current.workerPid === undefined
+    ? "Detached worker did not start before its supervision deadline."
+    : "Detached worker exited before recording a terminal state.";
+  const sequence = current.milestoneSequence + 1;
+  const reconciled: LongJobRecord = {
+    ...current,
+    state: "failed",
+    updatedAt: now,
+    endedAt: now,
+    failure,
+    milestoneSequence: sequence,
+  };
+  await appendFile(current.eventsPath, `${JSON.stringify({ version: 1, jobId: current.id, sequence, kind: "terminal", ts: now, state: "failed", failure })}\n`, { mode: 0o600 });
+  await writeJob(reconciled, options);
+  return reconciled;
+}
+
 export async function stopJob(id: string, options: StorageOptions = {}): Promise<LongJobRecord> {
   const job = await readJob(id, options);
   if (job.state !== "queued" && job.state !== "running") return job;
@@ -176,7 +225,7 @@ export async function stopJob(id: string, options: StorageOptions = {}): Promise
 export async function waitForTerminalJob(id: string, options: StorageOptions & { timeoutMs?: number } = {}): Promise<LongJobRecord> {
   const deadline = Date.now() + (options.timeoutMs ?? 30_000);
   while (Date.now() <= deadline) {
-    const job = await readJob(id, options);
+    const job = await reconcileJob(await readJob(id, options), options);
     if (job.state !== "queued" && job.state !== "running") return job;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }

@@ -2,7 +2,7 @@
 
 `pi-long-jobs` supervises shell commands that run for minutes or hours without blocking the main Pi orchestrator.
 
-It does **not** spawn agents and does not replace `pi-subagents`. It registers long-running processes through the official `pi-subagents` external-run and background-work APIs, so agents and processes share one FleetView while retaining separate lifecycle ownership.
+It does **not** spawn agents and does not replace `pi-subagents`. It publishes process state through the single `pi-subagents/work-provider` contract, so FleetView, waiting, attention routing, and whole-machine Overview all observe the same lifecycle record while execution ownership remains here.
 
 ## Why
 
@@ -13,10 +13,11 @@ A normal Pi `bash` tool call blocks the orchestrator until the process exits. Du
 - Detached execution that survives the initiating assistant turn
 - Direct background execution by default; visible Herdr raw panes are explicit opt-in
 - Persisted status, stdout, stderr, and structured event history
-- FleetView rows and per-item timelines through `pi-subagents/external-runs`
-- Background-work ownership through `pi-subagents/background-work`
+- One work-provider projection for FleetView, waiting, attention, and whole-machine telemetry
+- Every active job remains visible; `historyLimit` bounds terminal history only
+- Detached-worker liveness reconciliation prevents immortal queued/running records
 - Deterministic elapsed/output-age clocks without model-token use
-- Failure and inactivity wakeups for concise orchestrator attention reports
+- Failure and inactivity events routed and deduplicated by `pi-subagents`
 - Normal milestones stay in FleetView instead of creating chat-message spam
 - Process-group stop and timeout handling with SIGKILL escalation
 - `/jobs` and `/jobs-stop` interactive commands
@@ -27,7 +28,7 @@ A normal Pi `bash` tool call blocks the orchestrator until the process exits. Du
 Pin the GitHub release:
 
 ```bash
-pi install git:github.com/Narqulie/pi-long-jobs@v0.2.0
+pi install git:github.com/Narqulie/pi-long-jobs@v0.3.0
 ```
 
 For local development:
@@ -40,7 +41,7 @@ npm run check
 pi install ~/Developer/pi-long-jobs
 ```
 
-Restart Pi after installation. A compatible `pi-subagents` 0.58.x runtime must also be enabled. The package intentionally publishes through Git rather than npm.
+Restart Pi after installation. A compatible `pi-subagents` build exposing the version 1 work-provider contract must also be enabled. The package intentionally publishes through Git rather than npm.
 
 ## Use
 
@@ -93,7 +94,7 @@ PI_JOB_PROGRESS {"event":"completed_item","item":"erikamoi","current":2,"total":
 
 Supported events are `started_item`, `progress`, `completed_item`, and `failed_item`. FleetView's full inspector shows the eight most recent item states and durations; select the job row and press `Enter`. Untrusted labels and messages are stripped of control characters and length-bounded before they reach FleetView or model context.
 
-Routine starts, progress updates, item completions, and successful terminal events remain deterministic Fleet state. They do not trigger model turns. A failed item, failed/timed-out terminal state, or inactivity threshold wakes an idle orchestrator; if it is already working, the signal is steered into the active run instead of accumulating as a later follow-up turn.
+Routine starts, progress updates, item completions, and successful terminal events remain deterministic Fleet state. They do not trigger model turns. A failed item, failed/timed-out terminal state, or inactivity threshold emits one stable attention event; `pi-subagents` deduplicates and steers that event into the owning main session.
 
 ## Persistence
 
@@ -147,10 +148,11 @@ detached worker ──► zsh process group
     │                   └── stdout/stderr
     ├── status.json
     ├── events.jsonl
-    └── official pi-subagents registries
-            ├── compact FleetView
-            ├── full Fleet inspector + milestone timeline
-            └── background-work wake ownership
+    └── pi-subagents work-provider registry
+            ├── compact and full FleetView
+            ├── subagent_wait + headless auto-drain
+            ├── deduplicated attention routing
+            └── fleet RPC → whole-machine Overview
 ```
 
 The extension owns process supervision only. `pi-subagents` remains authoritative for agent spawning, contracts, worktrees, lifecycle, steering, and transcripts.

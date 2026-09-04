@@ -1,10 +1,19 @@
-import type { ExternalRun } from "pi-subagents/external-runs";
+import type { WorkItem } from "./work-provider.ts";
 import type { LongJobMilestone, LongJobRecord } from "./model.ts";
 
 const TIMELINE_ITEM_LIMIT = 8;
 
+export function redactWorkText(text: string): string {
+  return text
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/\b(?:sk(?:-proj)?|gh[pousr]|cfat)[-_][A-Za-z0-9_-]{12,}\b/g, "[redacted]")
+    .replace(/\b(?:api[-_ ]?key|accountkey|password|passwd|secret|token|authorization|sharedaccesssignature)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, (match) => `${match.slice(0, Math.max(match.indexOf(":"), match.indexOf("=")))}=[redacted]`)
+    .replace(/\b[A-Fa-f0-9]{32,}\b/g, "[redacted]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted-email]");
+}
+
 function bounded(value: string | undefined, max: number): string | undefined {
-  const safe = value?.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ").trim();
+  const safe = value ? redactWorkText(value).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ").trim() : undefined;
   return safe ? safe.slice(0, max) : undefined;
 }
 
@@ -69,25 +78,37 @@ export function projectJobForFleet(
   job: LongJobRecord,
   milestones: readonly LongJobMilestone[] = [],
   now = Date.now(),
-): ExternalRun {
-  const state: ExternalRun["state"] = job.state === "timed_out" ? "failed" : job.state;
+): WorkItem {
+  const state: WorkItem["state"] = job.state === "timed_out" ? "failed" : job.state;
   const currentAction = job.stopRequestedAt !== undefined && (job.state === "queued" || job.state === "running")
     ? "Stop requested · stopping process group"
-    : bounded(job.progress.currentAction, 160);
+    : job.state === "queued"
+      ? "Queued"
+      : job.state === "running" && job.progress.currentAction === "Starting process"
+        ? "Running command"
+        : job.state === "completed"
+          ? "Completed"
+          : job.state === "stopped"
+            ? "Stopped"
+            : bounded(job.failure ?? job.progress.currentAction, 160);
   const preview = timelinePreview(job, milestones, now);
+  const progress = job.progress.total !== undefined
+    ? { completed: job.progress.completed, total: job.progress.total }
+    : job.progress.completed > 0 ? { completed: job.progress.completed } : undefined;
   return {
     id: job.id,
     sessionId: job.ownerSessionId,
-    source: "long-job",
+    kind: "command",
     label: bounded(job.label, 160) ?? job.id,
     state,
     startedAt: job.startedAt,
     updatedAt: job.lastOutputAt ?? job.updatedAt,
     ...(job.endedAt !== undefined ? { endedAt: job.endedAt } : {}),
-    currentAction,
+    ...(currentAction ? { currentAction } : {}),
     ...(preview ? { preview } : {}),
     reportPath: job.eventsPath,
     transcriptPath: job.stdoutPath,
+    ...(progress ? { progress } : {}),
   };
 }
 

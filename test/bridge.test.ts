@@ -3,10 +3,21 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { snapshotExternalRuns } from "pi-subagents/external-runs";
-
 import { LongJobBridge } from "../src/bridge.ts";
+import type { LongJobRecord } from "../src/model.ts";
 import { startJob, waitForTerminalJob } from "../src/runtime.ts";
+import { ensureJobDirectory, writeJob } from "../src/storage.ts";
+import { WORK_PROVIDER_REGISTRY_KEY, type WorkItem } from "../src/work-provider.ts";
+
+function workSnapshot(sessionId: string): { items: readonly WorkItem[]; total: number; omitted: number } {
+  const registry = (globalThis as Record<PropertyKey, unknown>)[Symbol.for(WORK_PROVIDER_REGISTRY_KEY)] as { providers: Map<string, { snapshot(context: { sessionId: string; nowMs: number }): { items: WorkItem[]; total: number } }> } | undefined;
+  const snapshot = registry?.providers.get("pi-long-jobs")?.snapshot({ sessionId, nowMs: Date.now() }) ?? { items: [], total: 0 };
+  return { ...snapshot, omitted: Math.max(0, snapshot.total - snapshot.items.length) };
+}
+
+function snapshotWork(sessionId: string): readonly WorkItem[] {
+  return workSnapshot(sessionId).items;
+}
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -47,7 +58,7 @@ describe("long-job Fleet bridge", () => {
 
       assert.equal(changes, 1);
       assert.deepEqual(attentions, []);
-      const external = snapshotExternalRuns(ownerSessionId);
+      const external = snapshotWork(ownerSessionId);
       assert.equal(external.length, 1);
       assert.equal(external[0]?.state, "completed");
       assert.equal(external[0]?.label, "Bridge probe");
@@ -56,7 +67,7 @@ describe("long-job Fleet bridge", () => {
     } finally {
       bridge.dispose();
     }
-    assert.equal(snapshotExternalRuns(ownerSessionId).length, 0);
+    assert.equal(snapshotWork(ownerSessionId).length, 0);
   });
 
   it("does not replay an item failure when the failed terminal milestone arrives later", async () => {
@@ -93,7 +104,7 @@ describe("long-job Fleet bridge", () => {
       await bridge.refresh();
       await bridge.refresh();
       assert.deepEqual(attentions, ["failed_item"]);
-      const external = snapshotExternalRuns(ownerSessionId);
+      const external = snapshotWork(ownerSessionId);
       assert.equal(external[0]?.state, "failed");
       assert.match(external[0]?.preview ?? "", /✗ alpha/);
     } finally {
@@ -130,7 +141,7 @@ describe("long-job Fleet bridge", () => {
     try {
       await bridge.refresh();
       assert.deepEqual(attentions, []);
-      const external = snapshotExternalRuns(ownerSessionId);
+      const external = snapshotWork(ownerSessionId);
       assert.equal(external[0]?.state, "failed");
       assert.match(external[0]?.preview ?? "", /✗ beta/);
     } finally {
@@ -163,10 +174,60 @@ describe("long-job Fleet bridge", () => {
     const refresh = bridge.refresh();
     bridge.dispose();
     await refresh;
-    assert.equal(snapshotExternalRuns(ownerSessionId).length, 0);
+    assert.equal(snapshotWork(ownerSessionId).length, 0);
     const { stopJob } = await import("../src/runtime.ts");
     await stopJob(started.id, { jobsRoot: root });
     await waitForTerminalJob(started.id, { jobsRoot: root, timeoutMs: 5_000 });
+  });
+
+  it("keeps every active job and limits only terminal history", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-long-jobs-bridge-"));
+    roots.push(root);
+    const ownerSessionId = `session-${Date.now()}-bounds`;
+    const now = Date.now();
+    for (let index = 0; index < 46; index += 1) {
+      const id = `job-${String(index).padStart(2, "0")}`;
+      const directory = await ensureJobDirectory(id, { jobsRoot: root });
+      const active = index < 21;
+      const record: LongJobRecord = {
+        version: 1,
+        id,
+        label: `Job ${index}`,
+        commandDigest: `digest-${index}`,
+        cwd: root,
+        ownerSessionId,
+        surface: "direct",
+        state: active ? "running" : "completed",
+        startedAt: now - index,
+        updatedAt: now - index,
+        ...(active ? { workerPid: process.pid } : { endedAt: now - index, exitCode: 0 }),
+        jobDir: directory,
+        stdoutPath: path.join(directory, "stdout.log"),
+        stderrPath: path.join(directory, "stderr.log"),
+        eventsPath: path.join(directory, "events.jsonl"),
+        progress: { completed: 0, currentAction: active ? "Starting process" : "Completed" },
+        milestoneSequence: 0,
+      };
+      await writeJob(record, { jobsRoot: root });
+    }
+    const bridge = new LongJobBridge({
+      sessionId: ownerSessionId,
+      storage: { jobsRoot: root },
+      config: { historyLimit: 20, inactivityAfterMs: 60_000 },
+      callbacks: { onAttention: () => {}, onInactivity: () => {}, onChange: () => {} },
+    });
+    bridge.start();
+    try {
+      await bridge.refresh();
+      const snapshot = workSnapshot(ownerSessionId);
+      assert.equal(snapshot.total, 46);
+      assert.equal(snapshot.items.filter((item) => item.state === "running").length, 21);
+      assert.equal(snapshot.items.filter((item) => item.state === "completed").length, 20);
+      assert.equal(snapshot.omitted, 5);
+      assert.ok(snapshot.items.filter((item) => item.state === "running").every((item) => item.currentAction === "Running command"));
+    } finally {
+      bridge.dispose();
+    }
   });
 
   it("emits one inactivity alert per unchanged output timestamp", async () => {

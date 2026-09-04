@@ -3,9 +3,11 @@ import { Type, type Static } from "typebox";
 
 import { LongJobBridge } from "./bridge.ts";
 import { loadLongJobsConfig, type LongJobsConfig } from "./config.ts";
+import { redactWorkText } from "./fleet.ts";
 import type { LongJobMilestone, LongJobRecord, LongJobSurface } from "./model.ts";
 import { startJob, stopJob } from "./runtime.ts";
 import { listJobs, readJob, removeJob } from "./storage.ts";
+import { WORK_PROVIDER_ATTENTION_EVENT, WORK_PROVIDER_CHANGED_EVENT, WORK_PROVIDER_PROTOCOL_VERSION } from "./work-provider.ts";
 
 const LongJobParams = Type.Object({
   action: Type.Union([
@@ -63,6 +65,12 @@ function jobSummary(job: LongJobRecord, now = Date.now()): string {
   return `${job.label} · ${job.state} · ${elapsed}\n${progress} · ${outputAge} · ${location}\nID: ${job.id}\nstdout: ${job.stdoutPath}\nstderr: ${job.stderrPath}\nevents: ${job.eventsPath}`;
 }
 
+function visibleJobs(jobs: readonly LongJobRecord[], historyLimit: number): LongJobRecord[] {
+  const active = jobs.filter((job) => job.state === "queued" || job.state === "running");
+  const terminal = jobs.filter((job) => job.state !== "queued" && job.state !== "running").slice(0, historyLimit);
+  return [...active, ...terminal];
+}
+
 function toolResult(text: string, details: unknown = {}) {
   return { content: [{ type: "text" as const, text }], details };
 }
@@ -76,23 +84,30 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
   let sessionGeneration = 0;
 
   const sendAttention = (job: LongJobRecord, milestone: LongJobMilestone) => {
-    const text = milestoneText(job, milestone);
-    pi.sendMessage({
-      customType: "long-job-report",
-      content: `Machine-observed long-job milestone: ${text}. Report this progress concisely to the user. Do not claim any unobserved completion.`,
-      display: false,
-      details: { jobId: job.id, milestone },
-    }, { triggerTurn: true, deliverAs: "steer" });
+    pi.events.emit(WORK_PROVIDER_ATTENTION_EVENT, {
+      version: WORK_PROVIDER_PROTOCOL_VERSION,
+      provider: "pi-long-jobs",
+      id: job.id,
+      sessionId: job.ownerSessionId,
+      eventId: `${job.id}:${milestone.kind}:${milestone.sequence}`,
+      kind: "failure",
+      message: redactWorkText(milestoneText(job, milestone)),
+      observedAt: milestone.ts,
+    });
   };
 
   const sendInactivity = (job: LongJobRecord, inactiveForMs: number) => {
-    const text = `${job.label}: no output for ${duration(inactiveForMs)} while process remains ${job.state}`;
-    pi.sendMessage({
-      customType: "long-job-report",
-      content: `Machine-observed long-job attention signal: ${text}. Tell the user clearly and inspect status before making further claims.`,
-      display: false,
-      details: { jobId: job.id, inactiveForMs },
-    }, { triggerTurn: true, deliverAs: "steer" });
+    const observedAt = Date.now();
+    pi.events.emit(WORK_PROVIDER_ATTENTION_EVENT, {
+      version: WORK_PROVIDER_PROTOCOL_VERSION,
+      provider: "pi-long-jobs",
+      id: job.id,
+      sessionId: job.ownerSessionId,
+      eventId: `${job.id}:inactivity:${job.lastOutputAt ?? job.startedAt}`,
+      kind: "inactivity",
+      message: redactWorkText(`${job.label}: no output for ${duration(inactiveForMs)} while process remains ${job.state}`),
+      observedAt,
+    });
   };
 
   const refresh = async () => {
@@ -133,7 +148,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
         callbacks: {
           onAttention: sendAttention,
           onInactivity: sendInactivity,
-          onChange: () => pi.events.emit("pi-long-jobs:changed", { sessionId: sessionId(ctx) }),
+          onChange: () => pi.events.emit(WORK_PROVIDER_CHANGED_EVENT, { sessionId: sessionId(ctx) }),
         },
       });
       bridge.start();
@@ -176,7 +191,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
         return toolResult(`Started ${jobSummary(job)}\nThe orchestrator remains available.`, job);
       }
       if (input.action === "list") {
-        const jobs = (await listJobs()).filter((job) => job.ownerSessionId === ownerSessionId).slice(0, config.historyLimit);
+        const jobs = visibleJobs((await listJobs()).filter((job) => job.ownerSessionId === ownerSessionId), config.historyLimit);
         return toolResult(jobs.length ? jobs.map((job) => jobSummary(job)).join("\n\n") : "No long jobs for this session.", { jobs });
       }
       if (!input.id) throw new Error(`${input.action} requires id.`);
@@ -197,7 +212,7 @@ export default function longJobsExtension(pi: ExtensionAPI): void {
   pi.registerCommand("jobs", {
     description: "Inspect current-session supervised long jobs",
     handler: async (_args, ctx) => {
-      const jobs = (await listJobs()).filter((job) => job.ownerSessionId === sessionId(ctx));
+      const jobs = visibleJobs((await listJobs()).filter((job) => job.ownerSessionId === sessionId(ctx)), config?.historyLimit ?? 20);
       if (jobs.length === 0) {
         ctx.ui.notify("No long jobs for this session.", "info");
         return;

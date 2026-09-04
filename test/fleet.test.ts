@@ -40,11 +40,11 @@ const milestones: LongJobMilestone[] = [
 ];
 
 describe("Fleet projection and reporting policy", () => {
-  it("projects a running timeline through the official external-run shape", () => {
+  it("projects a running timeline through the shared work-provider shape", () => {
     assert.deepEqual(projectJobForFleet(record(), milestones, 8_000), {
       id: "job-1",
       sessionId: "session-1",
-      source: "long-job",
+      kind: "command",
       label: "Msplat batch",
       state: "running",
       startedAt: 1_000,
@@ -53,7 +53,17 @@ describe("Fleet projection and reporting policy", () => {
       preview: "Progress: 1/31 complete\n✓ emmanie · 6s\n◐ erikamoi · 1s",
       reportPath: "/tmp/job-1/events.jsonl",
       transcriptPath: "/tmp/job-1/stdout.log",
+      progress: { completed: 1, total: 31 },
     });
+  });
+
+  it("redacts display fields before publishing them to the shared provider", () => {
+    const projected = projectJobForFleet(record({
+      label: ["Deploy token", "super-secret-value"].join("="),
+      progress: { current: 0, completed: 0, currentAction: "Bearer abc.def.ghi" },
+    }), [], 8_000);
+    assert.equal(projected.label, "Deploy token=[redacted]");
+    assert.equal(projected.currentAction, "Bearer [redacted]");
   });
 
   it("bounds the timeline to the most recent eight items", () => {

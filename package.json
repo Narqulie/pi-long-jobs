@@ -1,6 +1,6 @@
 {
   "name": "pi-long-jobs",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Supervised long-running shell jobs with pi-subagents FleetView integration",
   "type": "module",
   "private": true,
@@ -26,9 +26,6 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
-  },
-  "dependencies": {
-    "pi-subagents": "0.58.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.84.3",

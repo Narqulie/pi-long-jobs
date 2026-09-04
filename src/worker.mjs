@@ -27,6 +27,25 @@ function appendEvent(event) {
   appendFileSync(spec.eventsPath, `${JSON.stringify({ version: 1, jobId: spec.id, ...event })}\n`, { mode: 0o600 });
 }
 
+let recordingFatalError = false;
+function recordFatalError(cause) {
+  if (recordingFatalError) return;
+  recordingFatalError = true;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  try {
+    const current = readStatus();
+    if (current.state === "queued" || current.state === "running") {
+      const endedAt = Date.now();
+      const sequence = current.milestoneSequence + 1;
+      try { appendEvent({ kind: "terminal", sequence, ts: endedAt, state: "failed", failure: message }); } catch {}
+      writeStatus({ ...current, state: "failed", updatedAt: endedAt, endedAt, failure: message, milestoneSequence: sequence });
+    }
+  } catch {}
+  process.exitCode = 1;
+}
+process.on("uncaughtException", recordFatalError);
+process.on("unhandledRejection", recordFatalError);
+
 const gateDeadline = Date.now() + 10_000;
 while (!existsSync(spec.startGatePath)) {
   if (Date.now() >= gateDeadline) throw new Error("Timed out waiting for the long-job start gate.");

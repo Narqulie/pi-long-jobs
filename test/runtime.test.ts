@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { readJob } from "../src/storage.ts";
-import { startJob, stopJob, waitForTerminalJob } from "../src/runtime.ts";
+import { reconcileJob, startJob, stopJob, waitForTerminalJob } from "../src/runtime.ts";
 
 const roots: string[] = [];
 
@@ -67,6 +67,27 @@ describe("detached long-job runtime", () => {
     const stdout = await readFile(completed.stdoutPath, "utf8");
     assert.ok(Buffer.byteLength(stdout) <= 128);
     assert.match(stdout, /log truncated at 128 bytes/);
+  });
+
+  it("terminalizes a job when its detached worker dies", async () => {
+    const root = await jobRoot();
+    const started = await startJob({
+      label: "Worker death probe",
+      command: "sleep 30",
+      cwd: root,
+      ownerSessionId: "session-test",
+      surface: "direct",
+    }, { jobsRoot: root });
+    const running = await waitUntil(started.id, root, (job) => job.state === "running" && Boolean(job.commandPid));
+    process.kill(running.workerPid!, "SIGKILL");
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      try { process.kill(running.workerPid!, 0); } catch { break; }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const failed = await reconcileJob(await readJob(started.id, { jobsRoot: root }), { jobsRoot: root });
+    assert.equal(failed.state, "failed");
+    assert.match(failed.failure ?? "", /Detached worker exited/);
   });
 
   it("stops the command process group and records a terminal stopped state", async () => {
